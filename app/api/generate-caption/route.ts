@@ -1,88 +1,124 @@
 import { NextResponse } from 'next/server';
 import { GoogleGenAI } from '@google/genai';
+import { cleanContext } from '@/lib/context';
+
+type GenerateCaptionBody = {
+  text?: string;
+  final_context?: string;
+  platform?: string;
+  tone?: string;
+};
+
+const OLLAMA_URL = 'http://localhost:11434/api/generate';
+const OLLAMA_MODEL = 'qwen3.5:0.6b';
 
 export async function POST(req: Request) {
   try {
-    const { final_context, platform, tone } = await req.json();
+    const body = (await req.json()) as GenerateCaptionBody;
+    const platform = (body.platform || 'Instagram').trim();
+    const tone = (body.tone || 'Fun').trim();
+    const rawContext = (body.text || body.final_context || '').trim();
 
-    if (!final_context) {
-      return NextResponse.json({ error: 'Context is required' }, { status: 400 });
+    if (!rawContext) {
+      return NextResponse.json({ error: 'Context is required.' }, { status: 400 });
     }
 
-    // Prepare Prompt
-    const prompt = `You are a social media caption writer.
-Generate 3–5 captions based on the context below.
+    const context = cleanContext(rawContext);
+    const prompt = buildPrompt({ context, platform, tone });
 
-Context:
-${final_context}
-
-Platform: ${platform || 'Instagram'}
-Tone: ${tone || 'Fun'}
-
-Rules:
-- Keep captions short (max 20 words)
-- Use simple, engaging language
-- Include 2 emojis
-- Include 3 relevant hashtags
-- Add a clear call-to-action
-- Format as a numbered list
-
-Output:
-- Structured list of captions`;
-
-    // Try hitting local Ollama first based on project constraints
-    try {
-      const ollamaResponse = await fetch('http://localhost:11434/api/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'qwen3.5:0.6b',
-          prompt: prompt,
-          stream: false,
-        }),
-      });
-
-      if (ollamaResponse.ok) {
-        const ollamaData = await ollamaResponse.json();
-        const text = ollamaData.response;
-        return NextResponse.json({ captions: parseCaptions(text) });
-      }
-    } catch (err) {
-      console.warn("Ollama is not available locally. Falling back to Gemini if configured.");
+    const localText = await generateWithOllama(prompt);
+    if (localText) {
+      return NextResponse.json({ captions: parseCaptions(localText) });
     }
 
-    // Fallback to Gemini API if Ollama isn't running locally (important for the AI Studio preview environment)
-    if (process.env.NEXT_PUBLIC_GEMINI_API_KEY || process.env.GEMINI_API_KEY) {
-      const ai = new GoogleGenAI({});
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.5-flash',
-        contents: prompt,
-      });
-
-      if (response.text) {
-         return NextResponse.json({ captions: parseCaptions(response.text) });
-      }
+    const remoteText = await generateWithGemini(prompt);
+    if (remoteText) {
+      return NextResponse.json({ captions: parseCaptions(remoteText) });
     }
 
-    return NextResponse.json({ error: 'No AI service available. Please ensure Ollama is running or GEMINI_API_KEY is set.' }, { status: 503 });
-
+    return NextResponse.json(
+      { error: 'No AI service available. Start Ollama or configure GEMINI_API_KEY.' },
+      { status: 503 }
+    );
   } catch (error) {
     console.error('Caption generation error:', error);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return NextResponse.json({ error: 'Internal server error.' }, { status: 500 });
   }
 }
 
-function parseCaptions(text: string): string[] {
-  // Extract numbered list items roughly
-  const regex = /\d+\.\s+([^\n]+)/g;
-  const matches = [...text.matchAll(regex)];
-  
-  if (matches.length > 0) {
-    return matches.map(m => m[1].trim());
+
+function buildPrompt({ context, platform, tone }: { context: string; platform: string; tone: string }): string {
+  return `You are a social media caption writer.
+
+Write exactly 3 distinct captions.
+
+Context:
+${context}
+
+Platform: ${platform}
+Tone: ${tone}
+Variation styles:
+1) quirky
+2) premium
+3) emotional
+
+Rules:
+- Keep each caption within 20 words
+- Use simple language
+- Include 2 emojis
+- Include 3 relevant hashtags
+- Include a clear CTA
+- Return only this numbered format:
+1. <caption>
+2. <caption>
+3. <caption>`;
+}
+
+async function generateWithOllama(prompt: string): Promise<string | null> {
+  try {
+    const response = await fetch(OLLAMA_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: OLLAMA_MODEL,
+        prompt,
+        stream: false,
+      }),
+    });
+
+    if (!response.ok) return null;
+    const data = (await response.json()) as { response?: string };
+    return data.response?.trim() || null;
+  } catch {
+    return null;
   }
-  
-  // Alternative fallback splitting
-  return text.split('\n')
-    .filter(line => line.trim().length > 10)
-    .map(line => line.replace(/^\d+[\.\)]\s*/, '').replace(/^- /, '').trim());
+}
+
+async function generateWithGemini(prompt: string): Promise<string | null> {
+  const apiKey = process.env.GEMINI_API_KEY || process.env.NEXT_PUBLIC_GEMINI_API_KEY;
+  if (!apiKey) return null;
+
+  try {
+    const ai = new GoogleGenAI({ apiKey });
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+    });
+    return response.text?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function parseCaptions(output: string): string[] {
+  const numbered = [...output.matchAll(/^\s*\d+[.)-]?\s+(.+)$/gm)]
+    .map((m) => m[1].trim())
+    .filter(Boolean);
+
+  const cleaned = (numbered.length > 0 ? numbered : output.split('\n'))
+    .map((line) => line.replace(/^\s*\d+[.)-]?\s*/, '').trim())
+    .filter((line) => line.length > 0);
+
+  const unique = Array.from(new Set(cleaned));
+  return unique.slice(0, 3);
 }

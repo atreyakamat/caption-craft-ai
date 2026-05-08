@@ -1,20 +1,80 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# CaptionCraft AI
 
-# Run and deploy your AI Studio app
+CaptionCraft AI is a local-first social caption generator built with Next.js. It uses Ollama (`qwen3.5:0.6b`) for fast offline generation, with Gemini as fallback, and optional OCR context extraction with Tesseract.
 
-This contains everything you need to run your app locally.
+## Stack
 
-View your app in AI Studio: https://ai.studio/apps/2c6515e1-c8d0-4510-bfe7-9ea4add4b039
+- Next.js 15 (App Router), React 19, TypeScript
+- Tailwind CSS 4 + glassmorphism UI
+- Local AI: Ollama (`qwen3.5:0.6b`)
+- Fallback AI: Gemini (`@google/genai`)
+- OCR: `tesseract.js`
 
-## Run Locally
+## Features
 
-**Prerequisites:**  Node.js
+- Fast caption generation (3 structured outputs)
+- Text + optional image OCR context
+- Tone + platform controls
+- Responsive output cards (1/2/3 columns by viewport)
+- Copy-to-clipboard feedback
+- Local-first architecture with graceful fallback
 
+## Local Setup
 
 1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+   ```bash
+   npm install
+   ```
+2. Copy environment file:
+   ```bash
+   cp .env.example .env.local
+   ```
+3. (Optional fallback) Set `GEMINI_API_KEY` in `.env.local`.
+4. (Recommended local-first) Start Ollama and pull model:
+   ```bash
+   ollama pull qwen3.5:0.6b
+   ollama serve
+   ```
+5. Start app:
+   ```bash
+   npm run dev
+   ```
+
+## Commands
+
+- `npm run dev` — Run development server
+- `npm run build` — Build production app
+- `npm run start` — Start production server
+- `npm run lint` — Run ESLint
+
+## API
+
+`POST /api/generate-caption`
+
+Request:
+
+```json
+{
+  "text": "Mango dessert launch",
+  "platform": "Instagram",
+  "tone": "Fun"
+}
+```
+
+Response:
+
+```json
+{
+  "captions": [
+    "🥭 ...",
+    "✨ ...",
+    "🔥 ..."
+  ]
+}
+```
+
+## Core Files
+
+- `app/page.tsx`
+- `app/api/generate-caption/route.ts`
+- `app/globals.css`

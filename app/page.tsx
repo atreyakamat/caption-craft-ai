@@ -1,306 +1,332 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
-import { UploadCloud, Sparkles, Copy, CheckCircle2, RotateCcw } from 'lucide-react';
+import React, { useMemo, useRef, useState } from 'react';
+import Image from 'next/image';
+import { UploadCloud, Sparkles, Copy, CheckCircle2, RefreshCw } from 'lucide-react';
 import Tesseract from 'tesseract.js';
+import { cleanContext } from '@/lib/context';
+
+type GenerationState = 'idle' | 'loading' | 'error' | 'success';
+
+const PLATFORM_OPTIONS = ['Instagram', 'LinkedIn', 'WhatsApp', 'TikTok'];
+const TONE_OPTIONS = ['Fun', 'Professional', 'Gen Z', 'Salesy'];
+const COPY_FEEDBACK_DURATION = 1500;
 
 export default function Home() {
   const [inputText, setInputText] = useState('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
-  
   const [tone, setTone] = useState('Fun');
   const [platform, setPlatform] = useState('Instagram');
   const [useImageContext, setUseImageContext] = useState(true);
-  
-  const [isGenerating, setIsGenerating] = useState(false);
   const [results, setResults] = useState<string[]>([]);
+  const [state, setState] = useState<GenerationState>('idle');
   const [error, setError] = useState<string | null>(null);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0];
-      setSelectedFile(file);
-      setImagePreview(URL.createObjectURL(file));
+  const canGenerate = useMemo(() => {
+    return Boolean(inputText.trim() || selectedFile);
+  }, [inputText, selectedFile]);
+
+  const setFile = (file: File) => {
+    if (imagePreview) {
+      URL.revokeObjectURL(imagePreview);
     }
+    setSelectedFile(file);
+    setImagePreview(URL.createObjectURL(file));
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) setFile(file);
   };
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      const file = e.dataTransfer.files[0];
-      setSelectedFile(file);
-      setImagePreview(URL.createObjectURL(file));
+    const file = e.dataTransfer.files?.[0];
+    if (file) setFile(file);
+  };
+
+  const handleCopy = async (text: string, index: number) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedIndex(index);
+      setTimeout(() => setCopiedIndex(null), COPY_FEEDBACK_DURATION);
+    } catch {
+      setError('Copy failed. Please copy manually.');
+      setState('error');
     }
   };
 
-  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-  };
+  const cleanOCRText = (text: string) => cleanContext(text);
 
-  const handleCopy = (text: string, index: number) => {
-    navigator.clipboard.writeText(text);
-    setCopiedIndex(index);
-    setTimeout(() => setCopiedIndex(null), 2000);
-  };
-
-  const cleanOCRText = (text: string) => {
-    // Remove excessive newlines, bizarre characters, and normalize spaces
-    return text.replace(/\n+/g, ' ').replace(/[^a-zA-Z0-9.,?!#@$%&()\s]/g, '').replace(/\s{2,}/g, ' ').trim();
+  const resetError = () => {
+    setError(null);
+    setState(results.length > 0 ? 'success' : 'idle');
   };
 
   const generateCaptions = async () => {
-    if (!inputText.trim() && !selectedFile) {
-      setError('Please provide some text context or an image.');
+    if (!canGenerate) {
+      setError('Please add text or an image to continue.');
+      setState('error');
       return;
     }
 
-    setIsGenerating(true);
+    setState('loading');
     setResults([]);
     setError(null);
 
     try {
       let finalContext = inputText.trim();
 
-      // OCR Processing
       if (selectedFile && useImageContext) {
         try {
           const worker = await Tesseract.createWorker('eng');
-          const ret = await worker.recognize(selectedFile);
-          const cleanedText = cleanOCRText(ret.data.text);
-          if (cleanedText) {
-             finalContext += `\n\n[Image Text context]: ${cleanedText}`;
+          const ocrResult = await worker.recognize(selectedFile);
+          const cleaned = cleanOCRText(ocrResult.data.text);
+          if (cleaned) {
+            finalContext = finalContext
+              ? `${finalContext}\n\nExtracted image text: ${cleaned}`
+              : `Extracted image text: ${cleaned}`;
           }
           await worker.terminate();
-        } catch (ocrError) {
-          console.warn('OCR processing failed:', ocrError);
-          // Continue generating even if OCR fails
+        } catch {
+          finalContext = finalContext || 'No additional OCR context detected.';
         }
       }
 
       if (!finalContext) {
-          finalContext = "An interesting image or video to share with my audience.";
+        finalContext = 'A social media post that needs engaging caption ideas.';
       }
 
-      // API Call
       const res = await fetch('/api/generate-caption', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          final_context: finalContext,
+          text: finalContext,
           tone,
           platform,
         }),
       });
 
       const data = await res.json();
-
       if (!res.ok) {
         throw new Error(data.error || 'Failed to generate captions');
       }
 
-      setResults(data.captions || []);
+      const captions: string[] = Array.isArray(data.captions) ? data.captions : [];
+      if (captions.length === 0) {
+        throw new Error('No captions returned by the model.');
+      }
 
-    } catch (err: any) {
-      setError(err.message || 'An unexpected error occurred.');
-    } finally {
-      setIsGenerating(false);
+      setResults(captions.slice(0, 3));
+      setState('success');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'An unexpected error occurred.';
+      setError(message);
+      setState('error');
     }
   };
 
   return (
-    <div className="flex flex-col min-h-screen relative font-sans text-slate-200 p-4 md:p-6 max-w-[1200px] mx-auto">
-      
-      {/* Navbar */}
-      <nav className="flex flex-col sm:flex-row justify-between items-center mb-6 min-h-[48px] px-4 py-3 sm:py-0 glass gap-4 sm:gap-0 mt-2">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center font-bold text-white">C</div>
-          <span className="text-xl font-bold tracking-tight">
-            CaptionCraft <span className="gradient-text">AI</span>
-          </span>
-        </div>
-        <div className="flex items-center gap-4 text-sm font-medium flex-wrap justify-center">
-          <div className="flex items-center gap-2 bg-slate-900/50 px-3 py-1.5 rounded-full border border-white/5">
-             <div className="status-dot"></div>
-             <span>Ollama: qwen3.5:0.6b</span>
+    <div className="min-h-screen px-4 py-4 md:px-6">
+      <div className="mx-auto flex max-w-[1100px] flex-col gap-6">
+        <nav className="glass sticky top-3 z-20 flex h-16 items-center justify-between px-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-600 font-bold text-white">C</div>
+            <span className="text-lg font-bold text-slate-100 sm:text-xl">
+              CaptionCraft <span className="gradient-text">AI</span>
+            </span>
           </div>
-          <div className="flex items-center gap-2 bg-slate-900/50 px-3 py-1.5 rounded-full border border-white/5">
-             <span>OCR Engine: Tesseract</span>
-          </div>
-        </div>
-      </nav>
+          <button
+            type="button"
+            className="h-11 rounded-xl border border-white/20 bg-white/10 px-4 text-sm font-semibold text-white transition-all duration-200 ease-in-out hover:border-indigo-300/60 hover:bg-indigo-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+          >
+            Upgrade
+          </button>
+        </nav>
 
-      <main className="grid grid-cols-1 lg:grid-cols-12 gap-5 flex-1">
-        {/* Left Column */}
-        <div className="lg:col-span-4 flex flex-col gap-5">
-          <div className="glass p-5 flex-1 flex flex-col gap-4">
-            <h3 className="text-xs uppercase tracking-widest text-slate-400 font-bold">Visual Context</h3>
-            
-            {/* Image Drop/Upload */}
-            <div 
-              className={`flex-1 border-2 border-dashed ${imagePreview ? 'border-indigo-500/50' : 'border-white/10'} rounded-xl flex flex-col items-center justify-center gap-2 cursor-pointer glass-hover transition-all bg-white/5 relative min-h-[160px] overflow-hidden`}
-              onDragOver={handleDragOver}
+        <main className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+          <section className="glass flex flex-col gap-4 p-5 lg:col-span-5">
+            <h1 className="text-2xl font-bold text-slate-50 sm:text-3xl">Generate captions fast</h1>
+            <p className="text-sm text-slate-300">Add text, optionally scan an image, choose tone + platform, and generate in seconds.</p>
+
+            <div
+              className={`relative min-h-[180px] cursor-pointer overflow-hidden rounded-2xl border-2 border-dashed p-4 transition-all duration-200 ease-in-out ${
+                imagePreview ? 'border-indigo-400/60 bg-white/10' : 'border-white/25 bg-white/5 hover:border-indigo-300/60'
+              }`}
+              onDragOver={(e) => e.preventDefault()}
               onDrop={handleDrop}
               onClick={() => fileInputRef.current?.click()}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  fileInputRef.current?.click();
+                }
+              }}
+              aria-label="Upload image"
             >
               {imagePreview ? (
                 <>
-                  <img src={imagePreview} alt="Preview" className="w-full h-full object-cover opacity-80 absolute inset-0" />
-                  <div className="absolute inset-0 bg-slate-900/40 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity">
-                      <span className="text-white text-xs font-semibold bg-slate-900/80 px-3 py-1.5 rounded-full shadow-md">Change Image</span>
+                  {/* Blob URLs from URL.createObjectURL are not handled by Next optimization pipeline. */}
+                  <Image src={imagePreview} alt={selectedFile?.name || 'Uploaded image preview'} fill className="object-cover opacity-85" unoptimized />
+                  <div className="absolute inset-0 flex items-center justify-center bg-slate-950/40 text-xs font-semibold text-white">
+                    Click or drop to replace image
                   </div>
                 </>
               ) : (
-                <>
-                  <svg xmlns="http://www.w3.org/2000/svg" className="w-8 h-8 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                  </svg>
-                  <p className="text-sm font-medium">Drop image or click to scan</p>
-                  <p className="text-[10px] text-slate-500">Auto-detecting text via OCR...</p>
-                </>
+                <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
+                  <UploadCloud className="h-8 w-8 text-indigo-300" />
+                  <p className="text-sm font-semibold text-slate-100">Drop image here or click to upload</p>
+                  <p className="text-xs text-slate-400">OCR will extract text context when enabled.</p>
+                </div>
               )}
-              <input type="file" className="hidden" ref={fileInputRef} onChange={handleFileChange} accept="image/*" />
+              <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleFileChange} />
             </div>
-            
-            <div className="flex flex-col gap-2 mt-2">
-              <div className="flex items-center justify-between">
-                <h3 className="text-xs uppercase tracking-widest text-slate-400 font-bold">Extra Details</h3>
-                
-                {/* OCR Toggle */}
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <span className="text-[10px] text-slate-500 font-medium">Use OCR</span>
-                  <div className="relative inline-flex items-center">
-                    <input type="checkbox" className="sr-only peer" checked={useImageContext} onChange={() => setUseImageContext(!useImageContext)} />
-                    <div className="w-7 h-4 bg-slate-700/50 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-slate-300 after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-indigo-500"></div>
-                  </div>
-                </label>
-              </div>
-              <textarea 
-                className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-sm focus:outline-none focus:border-indigo-500/50 h-32 resize-none placeholder:text-slate-600 text-slate-200"
-                placeholder="Add specific details about the vibe, people, or location..."
-                value={inputText}
-                onChange={(e) => setInputText(e.target.value)}
-              />
+
+            <textarea
+              className="min-h-[120px] w-full resize-y rounded-2xl border border-white/20 bg-white/5 p-3 text-sm leading-6 text-slate-100 placeholder:text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+              placeholder="Describe your post, product, launch, or mood..."
+              value={inputText}
+              onChange={(e) => setInputText(e.target.value)}
+            />
+          </section>
+
+          <section className="flex flex-col gap-6 lg:col-span-7">
+            <div className="glass grid grid-cols-1 gap-4 p-5 md:grid-cols-2">
+              <label className="flex flex-col gap-2 text-sm font-medium text-slate-200">
+                Tone
+                <select
+                  className="h-11 rounded-xl border border-white/20 bg-slate-950/40 px-3 text-sm text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                  value={tone}
+                  onChange={(e) => setTone(e.target.value)}
+                >
+                  {TONE_OPTIONS.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="flex flex-col gap-2 text-sm font-medium text-slate-200">
+                Platform
+                <select
+                  className="h-11 rounded-xl border border-white/20 bg-slate-950/40 px-3 text-sm text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                  value={platform}
+                  onChange={(e) => setPlatform(e.target.value)}
+                >
+                  {PLATFORM_OPTIONS.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="md:col-span-2 flex h-11 items-center justify-between rounded-xl border border-white/20 bg-white/5 px-3 text-sm text-slate-200">
+                Use image context
+                <input
+                  type="checkbox"
+                  checked={useImageContext}
+                  onChange={() => setUseImageContext((v) => !v)}
+                  className="h-5 w-5 accent-indigo-500"
+                />
+              </label>
             </div>
-          </div>
-          
-          <button 
-            onClick={generateCaptions}
-            disabled={isGenerating || (!inputText.trim() && !selectedFile)}
-            className="h-16 bg-gradient-to-r from-indigo-600 to-sky-500 rounded-2xl font-bold text-lg shadow-lg shadow-indigo-500/20 active:scale-95 transition-all text-white flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {isGenerating ? (
-              <div className="flex items-center gap-2">
-                 <Sparkles className="w-5 h-5 spinning-glow" /> 
-                 Generating...
-              </div>
-            ) : (
-               'Generate Captions'
-            )}
-          </button>
 
-          {error && (
-            <div className="p-4 bg-red-500/10 border border-red-500/30 rounded-xl text-red-400 text-sm">
-              {error}
-            </div>
-          )}
-        </div>
+            <div className="flex flex-col items-stretch gap-3 md:items-center">
+              <button
+                type="button"
+                onClick={generateCaptions}
+                disabled={state === 'loading' || !canGenerate}
+                className="h-12 w-full rounded-2xl bg-gradient-to-r from-indigo-600 to-indigo-500 px-6 text-base font-semibold text-white shadow-[0_8px_32px_rgba(99,102,241,0.4)] transition-all duration-200 ease-in-out hover:from-indigo-500 hover:to-indigo-400 hover:shadow-[0_10px_36px_rgba(99,102,241,0.55)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300 disabled:cursor-not-allowed disabled:opacity-60 md:w-auto"
+              >
+                {state === 'loading' ? (
+                  <span className="inline-flex items-center gap-2">
+                    <Sparkles className="h-4 w-4 animate-pulse" /> Generating captions...
+                  </span>
+                ) : (
+                  'Generate Captions'
+                )}
+              </button>
 
-        {/* Right Column */}
-        <div className="lg:col-span-8 flex flex-col gap-5">
-          {/* Controls Bar */}
-          <div className="glass p-5 lg:h-24 flex flex-col sm:flex-row items-center justify-between gap-4 sm:gap-0">
-            <div className="flex flex-col sm:flex-row gap-6 sm:gap-8 w-full">
-              <div className="flex flex-col gap-2">
-                <label className="text-[10px] uppercase tracking-wider text-slate-400 font-bold text-center sm:text-left">Platform</label>
-                <div className="flex flex-wrap bg-black/20 p-1 rounded-lg gap-1">
-                   {['Instagram', 'LinkedIn', 'WhatsApp', 'TikTok'].map(plat => (
-                      <button 
-                        key={plat}
-                        onClick={() => setPlatform(plat)}
-                        className={`px-4 py-1.5 rounded-md text-xs font-semibold transition-colors ${platform === plat ? 'bg-white/10 text-white' : 'text-slate-400 hover:bg-white/5 hover:text-slate-300'}`}
-                      >
-                         {plat === 'WhatsApp' ? 'WhatsApp' : plat === 'TikTok' ? 'TikTok' : plat === 'Instagram' ? 'Instagram' : 'LinkedIn'}
-                      </button>
-                   ))}
-                </div>
-              </div>
-              
-              <div className="flex flex-col gap-2">
-                <label className="text-[10px] uppercase tracking-wider text-slate-400 font-bold text-center sm:text-left">Tone</label>
-                <div className="flex flex-wrap bg-black/20 p-1 rounded-lg gap-1">
-                   {['Fun', 'Professional', 'Gen Z', 'Salesy'].map(t => (
-                      <button 
-                        key={t}
-                        onClick={() => setTone(t)}
-                        className={`px-4 py-1.5 rounded-md text-xs font-semibold transition-colors ${tone === t ? 'bg-white/10 text-white' : 'text-slate-400 hover:bg-white/5 hover:text-slate-300'}`}
-                      >
-                         {t}
-                      </button>
-                   ))}
-                </div>
-              </div>
-            </div>
-          </div>
-          
-          {/* Results Area */}
-          <div className="grid grid-cols-1 gap-4 flex-1">
-            {isGenerating && results.length === 0 && (
-              <div className="glass p-6 flex flex-col items-center justify-center min-h-[300px] text-center gap-4">
-                 <Sparkles className="w-8 h-8 text-indigo-400 spinning-glow" />
-                 <div>
-                   <p className="text-lg font-bold text-slate-200">Analyzing Context...</p>
-                   <p className="text-sm text-slate-500">Drafting the perfect narrative</p>
-                 </div>
-              </div>
-            )}
-
-            {!isGenerating && results.length === 0 && !error && (
-               <div className="glass p-6 border-dashed border-white/5 flex flex-col items-center justify-center min-h-[300px] text-center">
-                  <div className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center mb-4">
-                     <span className="text-2xl opacity-50">✨</span>
-                  </div>
-                  <p className="text-slate-400 text-sm">Your generated captions will appear here.</p>
-               </div>
-            )}
-
-            {results.map((caption, i) => (
-              <div key={i} className="glass glass-hover p-6 flex flex-col justify-between group relative overflow-hidden animate-[fadeIn_0.4s_ease-out_forwards]">
-                <div className="absolute top-0 right-0 p-4 opacity-0 group-hover:opacity-100 transition-opacity z-10">
-                  <button 
-                    onClick={() => handleCopy(caption, i)}
-                    className="text-[10px] bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 px-3 py-1.5 rounded-full font-semibold transition-colors flex items-center gap-1"
+              {state === 'error' && error && (
+                <div className="flex w-full items-center justify-between gap-3 rounded-xl border border-red-400/40 bg-red-500/10 p-3 text-sm text-red-200">
+                  <span>{error}</span>
+                  <button
+                    type="button"
+                    onClick={resetError}
+                    className="inline-flex h-10 items-center gap-2 rounded-lg border border-red-300/40 px-3 font-medium transition-all duration-200 ease-in-out hover:bg-red-400/20"
                   >
-                    {copiedIndex === i ? (
-                       <><CheckCircle2 className="w-3 h-3 text-green-400"/> Copied</>
-                    ) : (
-                       <><Copy className="w-3 h-3"/> Click to Copy</>
-                    )}
+                    <RefreshCw className="h-4 w-4" /> Retry
                   </button>
                 </div>
-                
-                <p className="text-base leading-relaxed text-slate-100 whitespace-pre-wrap mr-24">{caption}</p>
-                
-                <div className="mt-4 flex items-center justify-between border-t border-white/5 pt-4">
-                  <span className="text-xs font-mono text-slate-500">
-                    Variation #{i + 1}
-                  </span>
-                  
-                  {/* Visual purely decorative dots */}
-                  <div className="flex gap-2">
-                     <div className={`w-2 h-2 rounded-full ${i % 3 === 0 ? 'bg-indigo-500' : 'bg-slate-700'}`}></div>
-                     <div className={`w-2 h-2 rounded-full ${i % 3 === 1 ? 'bg-sky-500' : 'bg-slate-700'}`}></div>
-                     <div className={`w-2 h-2 rounded-full ${i % 3 === 2 ? 'bg-indigo-400' : 'bg-slate-700'}`}></div>
+              )}
+            </div>
+
+            <section className="glass min-h-[260px] p-5">
+              {state === 'loading' && (
+                <div className="space-y-3">
+                  <p className="text-sm font-medium text-slate-300">Generating captions...</p>
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+                    {[1, 2, 3].map((item) => (
+                      <div key={item} className="h-36 animate-pulse rounded-2xl border border-white/20 bg-white/8 p-4">
+                        <div className="h-3 w-3/4 rounded bg-white/20" />
+                        <div className="mt-3 h-3 w-full rounded bg-white/15" />
+                        <div className="mt-2 h-3 w-5/6 rounded bg-white/15" />
+                      </div>
+                    ))}
                   </div>
                 </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </main>
+              )}
+
+              {state !== 'loading' && results.length === 0 && (
+                <div className="flex min-h-[220px] flex-col items-center justify-center gap-2 text-center">
+                  <div className="text-3xl">✨</div>
+                  <p className="text-sm font-medium text-slate-200">Your captions will appear here</p>
+                  <p className="text-xs text-slate-400">Tip: add product details or upload poster text for better results.</p>
+                </div>
+              )}
+
+              {results.length > 0 && (
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  {results.map((caption, index) => (
+                    <article
+                      key={index}
+                      className="relative flex min-h-[180px] flex-col justify-between rounded-2xl border border-white/20 bg-white/8 p-4 shadow-[0_8px_24px_rgba(0,0,0,0.2)] transition-all duration-200 ease-in-out hover:-translate-y-0.5 hover:shadow-[0_12px_28px_rgba(0,0,0,0.24)]"
+                    >
+                      <p className="pr-2 text-sm leading-6 text-slate-100">{caption}</p>
+                      <div className="mt-4 flex items-end justify-between">
+                        <span className="text-xs text-slate-400">Caption {index + 1}</span>
+                        <button
+                          type="button"
+                          onClick={() => handleCopy(caption, index)}
+                          className="inline-flex h-10 items-center gap-1 rounded-lg border border-indigo-300/40 bg-indigo-500/20 px-3 text-xs font-semibold text-indigo-100 transition-all duration-200 ease-in-out hover:bg-indigo-500/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300"
+                        >
+                          {copiedIndex === index ? (
+                            <>
+                              <CheckCircle2 className="h-3.5 w-3.5" /> Copied
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="h-3.5 w-3.5" /> Copy
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </section>
+          </section>
+        </main>
+      </div>
     </div>
   );
 }
