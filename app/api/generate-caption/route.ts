@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { GoogleGenAI } from '@google/genai';
+import { cleanContext } from '@/lib/context';
 
 type GenerateCaptionBody = {
   text?: string;
@@ -45,9 +46,6 @@ export async function POST(req: Request) {
   }
 }
 
-function cleanContext(text: string): string {
-  return text.replace(/\n+/g, ' ').replace(/[^\w\s₹.,!?@#:&()\-]/g, '').replace(/\s{2,}/g, ' ').trim();
-}
 
 function buildPrompt({ context, platform, tone }: { context: string; platform: string; tone: string }): string {
   return `You are a social media caption writer.

@@ -75,6 +75,6 @@ Response:
 
 ## Core Files
 
-- `/home/runner/work/caption-craft-ai/caption-craft-ai/app/page.tsx`
-- `/home/runner/work/caption-craft-ai/caption-craft-ai/app/api/generate-caption/route.ts`
-- `/home/runner/work/caption-craft-ai/caption-craft-ai/app/globals.css`
+- `app/page.tsx`
+- `app/api/generate-caption/route.ts`
+- `app/globals.css`

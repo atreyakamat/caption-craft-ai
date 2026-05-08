@@ -4,11 +4,13 @@ import React, { useMemo, useRef, useState } from 'react';
 import Image from 'next/image';
 import { UploadCloud, Sparkles, Copy, CheckCircle2, RefreshCw } from 'lucide-react';
 import Tesseract from 'tesseract.js';
+import { cleanContext } from '@/lib/context';
 
 type GenerationState = 'idle' | 'loading' | 'error' | 'success';
 
 const PLATFORM_OPTIONS = ['Instagram', 'LinkedIn', 'WhatsApp', 'TikTok'];
 const TONE_OPTIONS = ['Fun', 'Professional', 'Gen Z', 'Salesy'];
+const COPY_FEEDBACK_DURATION = 1500;
 
 export default function Home() {
   const [inputText, setInputText] = useState('');
@@ -51,16 +53,14 @@ export default function Home() {
     try {
       await navigator.clipboard.writeText(text);
       setCopiedIndex(index);
-      setTimeout(() => setCopiedIndex(null), 1500);
+      setTimeout(() => setCopiedIndex(null), COPY_FEEDBACK_DURATION);
     } catch {
       setError('Copy failed. Please copy manually.');
       setState('error');
     }
   };
 
-  const cleanOCRText = (text: string) => {
-    return text.replace(/\n+/g, ' ').replace(/[^\w\s₹.,!?]/g, '').replace(/\s{2,}/g, ' ').trim();
-  };
+  const cleanOCRText = (text: string) => cleanContext(text);
 
   const resetError = () => {
     setError(null);
@@ -87,7 +87,9 @@ export default function Home() {
           const ocrResult = await worker.recognize(selectedFile);
           const cleaned = cleanOCRText(ocrResult.data.text);
           if (cleaned) {
-            finalContext = [finalContext, `Extracted image text: ${cleaned}`].filter(Boolean).join('\n\n');
+            finalContext = finalContext
+              ? `${finalContext}\n\nExtracted image text: ${cleaned}`
+              : `Extracted image text: ${cleaned}`;
           }
           await worker.terminate();
         } catch {
@@ -104,7 +106,6 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           text: finalContext,
-          final_context: finalContext,
           tone,
           platform,
         }),
@@ -171,7 +172,8 @@ export default function Home() {
             >
               {imagePreview ? (
                 <>
-                  <Image src={imagePreview} alt="Uploaded preview" fill className="object-cover opacity-85" unoptimized />
+                  {/* Blob URLs from URL.createObjectURL are not handled by Next optimization pipeline. */}
+                  <Image src={imagePreview} alt={selectedFile?.name || 'Uploaded image preview'} fill className="object-cover opacity-85" unoptimized />
                   <div className="absolute inset-0 flex items-center justify-center bg-slate-950/40 text-xs font-semibold text-white">
                     Click or drop to replace image
                   </div>
@@ -295,7 +297,7 @@ export default function Home() {
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
                   {results.map((caption, index) => (
                     <article
-                      key={`${caption}-${index}`}
+                      key={index}
                       className="relative flex min-h-[180px] flex-col justify-between rounded-2xl border border-white/20 bg-white/8 p-4 shadow-[0_8px_24px_rgba(0,0,0,0.2)] transition-all duration-200 ease-in-out hover:-translate-y-0.5 hover:shadow-[0_12px_28px_rgba(0,0,0,0.24)]"
                     >
                       <p className="pr-2 text-sm leading-6 text-slate-100">{caption}</p>
